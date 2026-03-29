@@ -1,7 +1,8 @@
 import os
 import json
 import argparse
-from segment import segment_transcript
+# from segment import segment_transcript
+from src.subtitle.segment import segment_transcript
 
 
 # Base paths
