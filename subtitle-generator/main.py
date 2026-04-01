@@ -3,7 +3,7 @@ import sys
 import glob
 import torch
 import json
-import subprocess # <-- Added to run the final video export directly!
+import subprocess
 
 # --- PYTORCH SECURITY BYPASS HACK ---
 original_load = torch.load
@@ -17,18 +17,20 @@ from src.subtitle.generate_srt import generate_srt
 def main():
     print("=== Starting AI Subtitle Generator Pipeline ===")
     
+    # THE FIX: Clean up old SRT files everywhere so we don't grab the wrong one!
+    for old_file in glob.glob("data/subtitles/*.srt") + glob.glob("*.srt") + glob.glob("temp/*.srt"):
+        try: os.remove(old_file)
+        except: pass
+
     video_files = glob.glob("data/raw_videos/*.mp4")
     if not video_files:
-        print("Error: Could not find any .mp4 files.")
+        print("Error: Could not find any .mp4 files in 'data/raw_videos'.")
         sys.exit(1)
         
     video_filename = os.path.basename(video_files[0])
     base_name = os.path.splitext(video_filename)[0]
 
-    # Clean filenames
     audio_filename = f"{base_name}.wav"
-    transcript_filename = f"{base_name}.json"
-    subtitle_filename = f"{base_name}.srt"
     final_video_filename = f"{base_name}_SUBTITLED.mp4"
 
     print(f"\nProcessing Video: {base_name}")
@@ -39,42 +41,46 @@ def main():
     
     # Step 2: Speech Recognition
     print("\n--- Step 2: Transcribing with Whisper ---")
-    transcribe_audio(audio_filename, "base") 
+    transcription_result = transcribe_audio(audio_filename, "base") 
     
     # Step 3: Format Subtitles
     print("\n--- Step 3: Generating SRT File ---")
-    json_path = f"data/transcripts/{transcript_filename}"
+    segments_data = None
     
-    try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            segments_data = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: Could not find the transcription file at {json_path}")
+    if isinstance(transcription_result, dict) and "segments" in transcription_result:
+        segments_data = transcription_result["segments"]
+    elif isinstance(transcription_result, list):
+        segments_data = transcription_result
+    else:
+        json_files = glob.glob("data/transcripts/*.json") + glob.glob("*.json")
+        if json_files:
+            latest_json = max(json_files, key=os.path.getctime)
+            with open(latest_json, 'r', encoding='utf-8') as f:
+                segments_data = json.load(f)
+                
+    if not segments_data:
+        print("Error: Could not extract subtitle timestamps from Whisper.")
         sys.exit(1)
         
-    generate_srt(segments_data, subtitle_filename)
+    generate_srt(segments_data, f"{base_name}.srt")
     
-    # Step 4: Burn Subtitles into Video (BYPASSING BUGGY PARTNER SCRIPT)
+    # Step 4: Burn Subtitles into Video
     print("\n--- Step 4: Burning Subtitles to Video ---")
-    
-    # 1. Grab the raw video path
     video_path = video_files[0]
     
-    # 2. Hunt down exactly where the partner's script saved the SRT file
-    srt_search = glob.glob(f"**/{subtitle_filename}", recursive=True)
-    if not srt_search:
-        print("Error: Could not locate the generated SRT file.")
-        sys.exit(1)
-    srt_path = srt_search[0]
+    # THE FIX: Search the main folder, the data folder, AND the temp folder for the SRT file!
+    srt_files = glob.glob("data/subtitles/*.srt") + glob.glob("*.srt") + glob.glob("temp/*.srt")
     
-    # 3. THE FIX: Convert Windows backslashes (\) to forward slashes (/) so FFmpeg doesn't crash!
+    if not srt_files:
+        print("Error: Could not locate the generated SRT file anywhere in the project.")
+        sys.exit(1)
+    
+    srt_path = max(srt_files, key=os.path.getctime)
     safe_srt_path = srt_path.replace("\\", "/")
     
-    # 4. Prepare output folder
     os.makedirs("final_output", exist_ok=True)
     final_output_path = f"final_output/{final_video_filename}"
     
-    # 5. Run the safe command
     ffmpeg_cmd = [
         "ffmpeg", "-y", 
         "-i", video_path, 
